@@ -2,6 +2,11 @@ use std::{env, ffi::CStr, fs, path::PathBuf};
 
 fn write_root_dir(path: PathBuf, bytes: &mut Vec<u8>) {
     let entries = fs::read_dir(&path).unwrap();
+    let len_entries = fs::read_dir(&path).unwrap();
+    let len = len_entries
+        .filter(|x| !x.as_ref().unwrap().file_type().unwrap().is_symlink())
+        .count();
+    bytes.extend_from_slice(&(len as u32).to_be_bytes());
     for entry in entries {
         let entry = entry.unwrap();
         let ty = entry.file_type().unwrap();
