@@ -1,124 +1,88 @@
-use std::ffi::CStr;
+pub mod files;
 
-#[derive(Debug, PartialEq, Eq)]
-pub struct Entry<'a> {
-    pub name: &'a CStr,
-    pub entry: EntryInner<'a>,
+pub trait Serialize {
+    fn write(&self, out: &mut Vec<u8>);
+}
+pub trait Deserialize<'a>: Sized {
+    fn read(bytes: &'a [u8]) -> (Self, usize);
 }
 
-#[derive(Debug, PartialEq, Eq)]
-pub enum EntryInner<'a> {
-    File(&'a [u8]),
-    Directory(u32),
+#[derive(Clone, Copy, Debug)]
+pub struct Section<'a> {
+    pub ty: u32,
+    pub metadata: u32,
+    pub bytes: &'a [u8]
 }
-
-fn read_single_entry(bytes: &[u8]) -> (Entry, usize) {
-    let mut i = 0;
-    let is_dir = bytes[i] != 0;
-    i += 1;
-    while bytes[i] != 0 {
-        i += 1;
+impl<'a> Serialize for Section<'a> {
+    fn write(&self, out: &mut Vec<u8>) {
+        out.extend_from_slice(&self.ty.to_be_bytes());
+        out.extend_from_slice(&self.metadata.to_be_bytes());
+        out.extend_from_slice(&(self.bytes.len() as u32).to_be_bytes());
+        out.extend_from_slice(self.bytes);
     }
-    let name = CStr::from_bytes_with_nul(&bytes[1..=i]).unwrap();
-    i += 1;
-    let len = u32::from_be_bytes(bytes[i..(i + 4)].try_into().unwrap());
-    i += 4;
-    (
-        Entry {
-            name,
-            entry: if !is_dir {
-                let entry = EntryInner::File(&bytes[i..i + (len as usize)]);
-                i += len as usize;
-                entry
-            } else {
-                EntryInner::Directory(len)
-            },
-        },
-        i,
-    )
 }
-pub fn read_entry_recursive<'a>(bytes: &'a [u8], entries: &mut Vec<Entry<'a>>) -> usize {
-    let mut i = 0;
-    let mut remaining = 1;
-    while remaining > 0 {
-        let (entry, j) = read_single_entry(&bytes[i..]);
-        i += j;
-        if let EntryInner::Directory(len) = &entry.entry {
-            remaining += len
-        }
-        entries.push(entry);
-        remaining -= 1;
-        dbg!(remaining);
+impl<'a> Deserialize<'a> for Section<'a> {
+    fn read(bytes: &'a [u8]) -> (Self, usize) {
+        let ty = u32::from_be_bytes(bytes[0..4].try_into().unwrap());
+        let metadata = u32::from_be_bytes(bytes[4..8].try_into().unwrap());
+        let len = u32::from_be_bytes(bytes[8..12].try_into().unwrap());
+        let bytes = &bytes[12..(12 + len as usize)];
+        (Self {
+            ty,
+            metadata,
+            bytes,
+        }, (12 + len as usize))
     }
-    dbg!(i);
-    i
 }
 
-pub fn write_single_entry(entry: &Entry, bytes: &mut Vec<u8>) {
-    let name = entry.name;
-    let entry = &entry.entry;
-    match entry {
-        EntryInner::File(contents) => {
-            bytes.push(0);
-            bytes.extend_from_slice(name.to_bytes_with_nul());
-            bytes.extend_from_slice(&(contents.len() as u32).to_be_bytes());
-            bytes.extend_from_slice(contents);
-        }
-        EntryInner::Directory(len) => {
-            bytes.push(1);
-            bytes.extend_from_slice(name.to_bytes_with_nul());
-            bytes.extend_from_slice(&len.to_be_bytes());
+#[derive(Debug, Clone)]
+pub struct File<'a> {
+    pub magic: [u8; 4],
+    pub version_major: u8,
+    pub version_minor: u8,
+    pub version_patch: u8,
+    pub sections: Vec<Section<'a>>
+}
+impl<'a> Serialize for File<'a> {
+    fn write(&self, out: &mut Vec<u8>) {
+        out.extend_from_slice(&self.magic);
+        out.push(0);
+        out.push(self.version_major);
+        out.push(self.version_minor);
+        out.push(self.version_patch);
+        for section in &self.sections {
+            section.write(out);
         }
     }
 }
-pub fn write_entry_recursive(entries: &[Entry], bytes: &mut Vec<u8>) {
-    for entry in entries {
-        write_single_entry(entry, bytes);
+impl<'a> Deserialize<'a> for File<'a> {
+    fn read(bytes: &'a [u8]) -> (Self, usize) {
+        let magic = bytes[0..4].try_into().unwrap();
+        assert_eq!(magic, [b'n', b't', b'a', b'r']);
+        let version_major = bytes[5];
+        let version_minor = bytes[6];
+        let version_patch = bytes[7];
+        let mut ptr = 8;
+        let mut sections = vec![];
+        while ptr < bytes.len() {
+            let (section, incr) = Section::read(&bytes[ptr..]);
+            sections.push(section);
+            ptr += incr
+        }
+        (Self {
+            magic,
+            version_major,
+            version_minor,
+            version_patch,
+            sections,
+        }, ptr)
     }
 }
-pub fn read_entries_recursive(bytes: &[u8]) -> Vec<Entry> {
-    let mut entries = vec![];
-    let mut i = 0;
-    while i < bytes.len() {
-        i += read_entry_recursive(&bytes[i..], &mut entries);
+impl<'a> File<'a> {
+    pub fn new(sections: Vec<Section<'a>>) -> Self {
+        Self { magic: [b'n', b't', b'a', b'r'], version_major: 0, version_minor: 0, version_patch: 0, sections }
     }
-    entries
-}
-
-#[cfg(test)]
-mod tests {
-    use std::{ffi::CString, str::FromStr};
-
-    use crate::*;
-
-    #[test]
-    fn file_read_single_entry() {
-        let bytes = [0, b'h', b'e', b'l', b'l', b'o', 0, 0, 0, 0, 1, 65];
-        let entry = read_single_entry(&bytes).0;
-        assert_eq!(
-            entry,
-            Entry {
-                name: &CString::from_str("hello").unwrap(),
-                entry: EntryInner::File(&[65])
-            }
-        )
-    }
-    #[test]
-    fn rw_entry() {
-        let entries = [
-            Entry {
-                name: &CString::from_str("hello").unwrap(),
-                entry: EntryInner::Directory(1),
-            },
-            Entry {
-                name: &CString::from_str("world.txt").unwrap(),
-                entry: EntryInner::File(&[0, 1, 2, 3, 4]),
-            },
-        ];
-        let mut bytes = vec![];
-        write_entry_recursive(&entries, &mut bytes);
-        let mut new = vec![];
-        read_entry_recursive(&bytes, &mut new);
-        assert_eq!(entries.as_slice(), &new)
+    pub fn sanity_check(&self) {
+        assert_eq!(self.magic, [b'n', b't', b'a', b'r']);
     }
 }

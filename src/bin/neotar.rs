@@ -1,5 +1,7 @@
 use std::{env, ffi::CStr, fs, path::PathBuf};
 
+use neotar::Serialize;
+
 fn write_root_dir(path: PathBuf, bytes: &mut Vec<u8>) {
     let entries = fs::read_dir(&path).unwrap();
     let len_entries = fs::read_dir(&path).unwrap();
@@ -17,10 +19,10 @@ fn write_root_dir(path: PathBuf, bytes: &mut Vec<u8>) {
         } else if ty.is_file() {
             let mut name = entry.file_name().into_encoded_bytes();
             name.push(0);
-            neotar::write_single_entry(
-                &neotar::Entry {
+            neotar::files::write_single_entry(
+                &neotar::files::Entry {
                     name: CStr::from_bytes_with_nul(&name).unwrap(),
-                    entry: neotar::EntryInner::File(&fs::read(entry.path()).unwrap()),
+                    entry: neotar::files::EntryInner::File(&fs::read(entry.path()).unwrap()),
                 },
                 bytes,
             );
@@ -36,10 +38,10 @@ fn write_dir(path: PathBuf, bytes: &mut Vec<u8>) {
     let len = len_entries
         .filter(|x| !x.as_ref().unwrap().file_type().unwrap().is_symlink())
         .count();
-    neotar::write_single_entry(
-        &neotar::Entry {
+    neotar::files::write_single_entry(
+        &neotar::files::Entry {
             name: CStr::from_bytes_with_nul(&name).unwrap(),
-            entry: neotar::EntryInner::Directory(len as u32),
+            entry: neotar::files::EntryInner::Directory(len as u32),
         },
         bytes,
     );
@@ -53,10 +55,10 @@ fn write_dir(path: PathBuf, bytes: &mut Vec<u8>) {
         } else if ty.is_file() {
             let mut name = entry.file_name().into_encoded_bytes();
             name.push(0);
-            neotar::write_single_entry(
-                &neotar::Entry {
+            neotar::files::write_single_entry(
+                &neotar::files::Entry {
                     name: CStr::from_bytes_with_nul(&name).unwrap(),
-                    entry: neotar::EntryInner::File(&fs::read(entry.path()).unwrap()),
+                    entry: neotar::files::EntryInner::File(&fs::read(entry.path()).unwrap()),
                 },
                 bytes,
             );
@@ -66,7 +68,9 @@ fn write_dir(path: PathBuf, bytes: &mut Vec<u8>) {
 
 fn main() {
     let path = env::current_dir().unwrap();
+    let mut section_bytes = vec![];
+    write_root_dir(path, &mut section_bytes);
     let mut bytes = vec![];
-    write_root_dir(path, &mut bytes);
+    neotar::File::new(vec![neotar::Section { ty: 0, metadata: 0, bytes: &section_bytes }]).write(&mut bytes);
     fs::write("a.ntar", bytes).unwrap();
 }
